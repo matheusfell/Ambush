@@ -1,4 +1,4 @@
-"""Configuração SMTP persistida (senha criptografada)."""
+﻿"""Configuração de envio de e-mail persistida (secrets criptografados)."""
 
 from __future__ import annotations
 
@@ -11,11 +11,17 @@ from app.database import Base
 
 
 class SmtpSettings(Base):
-    """Única linha de configuração SMTP (singleton lógico)."""
+    """Única linha de configuração de envio (Graph recomendado, SMTP legado)."""
 
     __tablename__ = "smtp_settings"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    delivery_method: Mapped[str] = mapped_column(String(20), nullable=False, default="graph")
+
+    graph_tenant_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    graph_client_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    graph_client_secret_encrypted: Mapped[str | None] = mapped_column(Text, nullable=True)
+
     host: Mapped[str] = mapped_column(String(255), nullable=False, default="")
     port: Mapped[int] = mapped_column(Integer, nullable=False, default=587)
     username: Mapped[str | None] = mapped_column(String(255), nullable=True)
@@ -31,4 +37,4 @@ class SmtpSettings(Base):
     )
 
     def __repr__(self) -> str:
-        return f"<SmtpSettings host={self.host!r} port={self.port}>"
+        return f"<EmailSettings method={self.delivery_method!r} from={self.from_email!r}>"

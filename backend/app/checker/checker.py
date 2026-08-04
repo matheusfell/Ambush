@@ -24,6 +24,7 @@ logger = get_logger(__name__)
 
 # Pausa entre tentativas para não martelar a rede em falha transitória
 _RETRY_BACKOFF_SECONDS = 0.5
+_BODY_EXCERPT_LIMIT = 4000
 
 
 @dataclass(frozen=True, slots=True)
@@ -34,6 +35,7 @@ class CheckExecutionResult:
     response_time_ms: int | None
     result: CheckResult
     error_message: str | None
+    response_body_excerpt: str | None
     attempt_count: int
     severity: str
 
@@ -43,6 +45,7 @@ class _AttemptDetail:
     status_code: int | None
     response_time_ms: int | None
     outcome: ClassificationOutcome
+    response_body_excerpt: str | None = None
 
 
 def _build_ssl_context(skip_tls_verify: bool) -> ssl.SSLContext:
@@ -96,6 +99,15 @@ def _classify_error(
     return _AttemptDetail(None, elapsed_ms, outcome)
 
 
+def _body_excerpt(response: httpx.Response) -> str | None:
+    if not response.content:
+        return None
+    body = response.text
+    if len(body) <= _BODY_EXCERPT_LIMIT:
+        return body
+    return body[:_BODY_EXCERPT_LIMIT] + "\n\n[resposta truncada]"
+
+
 async def _single_attempt(monitor: Monitor) -> _AttemptDetail:
     """Executa uma única requisição HTTP e classifica o resultado com métricas."""
     timeout = httpx.Timeout(float(monitor.timeout_seconds))
@@ -121,9 +133,7 @@ async def _single_attempt(monitor: Monitor) -> _AttemptDetail:
             )
         elapsed_ms = int((time.perf_counter() - started) * 1000)
 
-        body_text: str | None = None
-        if monitor.expected_body_contains:
-            body_text = response.text
+        body_text = _body_excerpt(response)
 
         outcome = classify(
             ClassificationInput(
@@ -140,6 +150,7 @@ async def _single_attempt(monitor: Monitor) -> _AttemptDetail:
             status_code=response.status_code,
             response_time_ms=elapsed_ms,
             outcome=outcome,
+            response_body_excerpt=body_text,
         )
     except httpx.TimeoutException:
         elapsed_ms = int((time.perf_counter() - started) * 1000)
@@ -195,6 +206,7 @@ async def execute_check(monitor: Monitor) -> CheckExecutionResult:
                 response_time_ms=None,
                 result=CheckResult.DOWN,
                 error_message=str(exc),
+                response_body_excerpt=None,
                 attempt_count=attempt,
                 severity="ERROR",
             )
@@ -206,6 +218,7 @@ async def execute_check(monitor: Monitor) -> CheckExecutionResult:
                 response_time_ms=detail.response_time_ms,
                 result=detail.outcome.result,
                 error_message=detail.outcome.error_message,
+                response_body_excerpt=detail.response_body_excerpt,
                 attempt_count=attempt,
                 severity=detail.outcome.severity.value,
             )
@@ -219,6 +232,7 @@ async def execute_check(monitor: Monitor) -> CheckExecutionResult:
         response_time_ms=last.response_time_ms,
         result=last.outcome.result,
         error_message=last.outcome.error_message,
+        response_body_excerpt=last.response_body_excerpt,
         attempt_count=max_attempts,
         severity=last.outcome.severity.value,
     )

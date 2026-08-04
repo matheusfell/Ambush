@@ -1,124 +1,99 @@
-# AmbushSystem — Fases 1 e 2
+# AmbushSystem — Fases 1–3
 
-Monitoramento interno de disponibilidade de sistemas (escritório).
+Monitoramento interno de disponibilidade (escritório).
 
-- **Fase 1:** checagens HTTP, CRUD de monitores, agendador, logs  
-- **Fase 2:** incidentes, SMTP, grupos de destinatários, anti-flood / quiet hours  
-
-Sem UI ainda (React = Fase 3). Validação via API / PowerShell / `/docs`.
-
-## Pré-requisitos
-
-- Python 3.12+
-- [uv](https://docs.astral.sh/uv/) — se o terminal não achar: `$env:Path = "$env:USERPROFILE\.local\bin;$env:Path"`
-- Docker Desktop (Postgres)
+| Fase | Conteúdo |
+|---|---|
+| 1 | Checagens HTTP, monitores, agendador, logs |
+| 2 | Incidentes, SMTP, grupos, anti-flood |
+| 3 | **JWT + dashboard React** |
 
 ## Subida rápida
 
+### Backend
+
 ```powershell
+$env:Path = "$env:USERPROFILE\.local\bin;$env:Path"
 cd AmbushSystem
-Copy-Item .env.example .env
-# Gere ENCRYPTION_KEY e cole no .env:
-python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+Copy-Item .env.example .env   # se ainda não tiver
+# preencha ENCRYPTION_KEY e JWT_SECRET
 
 docker compose up -d
 cd backend
 uv sync --extra dev
 uv run alembic upgrade head
 
-# UM único worker — o agendador vive neste processo
+# UM único worker
 uv run uvicorn app.main:app --host 0.0.0.0 --port 8000
 ```
 
-- Health: http://localhost:8000/api/health  
-- Docs: http://localhost:8000/docs  
+Admin seed (só na primeira subida, se `users` vazia):
 
-## Fase 2 — configurar alertas
+- usuário: `admin` (ou `ADMIN_USERNAME`)
+- senha: `admin123` (ou `ADMIN_PASSWORD`) — **troque em produção**
 
-### 1. Grupo de destinatários
-
-```powershell
-$body = @{
-  name = "TI"
-  emails = @("seu.email@reis.adv.br")
-} | ConvertTo-Json
-
-Invoke-RestMethod -Method Post -Uri http://localhost:8000/api/notification-groups `
-  -ContentType "application/json" -Body $body
-```
-
-### 2. SMTP (Microsoft 365 ou relay interno)
+### Frontend
 
 ```powershell
-$smtp = @{
-  host = "smtp.office365.com"
-  port = 587
-  username = "noreply@reis.adv.br"
-  password = "SUA_SENHA"
-  from_email = "noreply@reis.adv.br"
-  from_name = "AmbushSystem"
-  use_tls = $true
-} | ConvertTo-Json
-
-Invoke-RestMethod -Method Put -Uri http://localhost:8000/api/settings/smtp `
-  -ContentType "application/json" -Body $smtp
-
-# Teste (mostra o erro real do SMTP se falhar)
-Invoke-RestMethod -Method Post -Uri http://localhost:8000/api/settings/smtp/test `
-  -ContentType "application/json" `
-  -Body (@{ to_email = "seu.email@reis.adv.br" } | ConvertTo-Json)
+cd AmbushSystem\frontend
+npm install
+npm run dev
 ```
 
-> Porta **587** + `use_tls=true` → STARTTLS. Porta **465** → TLS implícito automático.
+Abra http://localhost:5173 — o Vite faz proxy de `/api` → `:8000`.
 
-### 3. Vincular grupo ao monitor
+### Frontend acoplado ao backend
+
+Para servir a interface pelo próprio FastAPI em uma única porta:
 
 ```powershell
-Invoke-RestMethod -Method Put -Uri http://localhost:8000/api/monitors/1 `
-  -ContentType "application/json" `
-  -Body (@{ notification_group_id = 1 } | ConvertTo-Json)
+cd AmbushSystem\frontend
+npm install
+npm run build
+
+cd ..\backend
+uv run uvicorn app.main:app --host 0.0.0.0 --port 8000
 ```
 
-### 4. Regras globais (anti-flood / quiet hours)
+Depois acesse http://localhost:8000. As rotas `/api/*` continuam sendo API, e as
+rotas do React, como `/monitors/1`, são entregues pelo fallback do backend.
 
-```powershell
-Invoke-RestMethod http://localhost:8000/api/settings/notification-rules
+## Dashboard (Fase 3)
 
-$rules = @{
-  on_down = $true
-  on_recovery = $true
-  on_degraded = $false
-  min_interval_minutes = 30
-  reminder_minutes = 60
-  quiet_hours_start = "22:00:00"
-  quiet_hours_end = "06:00:00"
-} | ConvertTo-Json
+- Contadores: online / degradado / fora / pausado
+- Cards por monitor com barra de histórico limitada às últimas 36 checagens
+- Agrupamento por tag
+- Polling a cada 30s
+- Admin: “Checar agora” e pausar/retomar no card
+- Viewer: só visualiza
 
-Invoke-RestMethod -Method Put -Uri http://localhost:8000/api/settings/notification-rules `
-  -ContentType "application/json" -Body $rules
+Direção visual: console operacional escuro, IBM Plex Sans/Mono, status com **cor + ícone** (daltonismo).
+
+## Auth
+
+```http
+POST /api/auth/login   { "username", "password" } → { access_token }
+GET  /api/auth/me      Bearer token
+POST /api/auth/users   admin cria usuários (role: admin|viewer)
 ```
 
-### 5. Incidentes
+Endpoints de leitura exigem login; mutações exigem `admin`.  
+`GET /api/health` permanece aberto.
 
-```powershell
-Invoke-RestMethod "http://localhost:8000/api/incidents?status=open"
-Invoke-RestMethod http://localhost:8000/api/incidents/1
-```
+## E-mail de alerta
 
-Para forçar um incidente em teste: aponte um monitor para uma URL inválida, rode `POST /api/monitors/{id}/check`, depois corrija e cheque de novo para ver o `[RESTABELECIDO]`.
+Na aba **E-mail**, o admin configura:
 
-## Validação Fase 1 (monitores)
+- Conexão global de envio:
+  - **Microsoft 365 Graph** (recomendado): `Tenant ID`, `Client ID`, `Client Secret` e remetente.
+  - **SMTP legado/relay interno**: `host`, porta, usuário, senha e TLS.
+- Alerta por monitor: destinatários, assunto/corpo e quantas checagens `DOWN` seguidas são necessárias para enviar.
 
-```powershell
-Invoke-RestMethod http://localhost:8000/api/health
-Invoke-RestMethod http://localhost:8000/api/monitors
-Invoke-RestMethod -Method Post -Uri http://localhost:8000/api/monitors/1/check
-Invoke-RestMethod "http://localhost:8000/api/monitors/1/checks?page=1"
-```
+Por padrão, o alerta só é disparado após **3 checagens `DOWN` consecutivas**. Variáveis aceitas nos templates: `{monitor_name}`, `{url}`, `{error}`, `{status_code}`, `{failure_count}`, `{duration}` e `{dashboard_url}`.
 
-> Certificados: o checker usa o trust store do sistema. Autoassinado sem CA → `skip_tls_verify: true`.
+Para O365 Graph, o App Registration precisa da permissão Application `Mail.Send` com consentimento administrativo. Secrets podem ser carregados inicialmente pelo `.env` (`O365_TENANT_ID`, `O365_CLIENT_ID`, `O365_CLIENT_SECRET`, `EMAIL_FROM_ADDR`) e ficam criptografados quando salvos pelo painel.
 
-## Testes
+## Testes backend
 
 ```powershell
 cd backend
@@ -127,19 +102,7 @@ uv run ruff check app tests
 uv run mypy app
 ```
 
-## Arquitetura
-
-| Decisão | Escolha |
-|---|---|
-| Processo do agendador | 1 worker Uvicorn |
-| Scheduler | 1 `asyncio.Task` por monitor + Semaphore |
-| HTTP | `httpx.AsyncClient` |
-| E-mail | `aiosmtplib` (STARTTLS / SSL 465) |
-| Senhas no banco | Fernet (`ENCRYPTION_KEY`) |
-| Incidentes | Abre em DOWN, fecha no primeiro UP; anti-flood via `last_notified_at` |
-
 ## Próximas fases
 
-- **Fase 3:** React + JWT + dashboard  
-- **Fase 4:** detalhe do monitor, gráficos, settings UI  
+- **Fase 4:** detalhe do monitor, gráficos, filtros de log, telas de config
 - **Fase 5:** Docker Compose completo, retenção, deploy na VM

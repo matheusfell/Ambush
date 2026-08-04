@@ -20,6 +20,7 @@ def _to_read(row: object) -> SmtpSettingsRead:
     assert isinstance(row, SmtpSettings)
     data = SmtpSettingsRead.model_validate(row)
     data.has_password = bool(row.password_encrypted)
+    data.has_graph_client_secret = bool(row.graph_client_secret_encrypted)
     return data
 
 

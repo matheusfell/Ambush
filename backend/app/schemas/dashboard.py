@@ -7,17 +7,25 @@ from datetime import datetime
 from pydantic import BaseModel
 
 
+class MonitorHistoryItem(BaseModel):
+    id: int
+    result: str
+    checked_at: datetime
+
+
 class MonitorCard(BaseModel):
     id: int
     name: str
     url: str
     enabled: bool
+    interval_seconds: int
     tags: list[str]
     current_result: str | None
     last_checked_at: datetime | None
+    next_check_at: datetime | None
     last_response_time_ms: int | None
     uptime_24h_percent: float | None
-    history: list[str]  # últimos N resultados: UP|DEGRADED|DOWN
+    history: list[MonitorHistoryItem]
 
 
 class DashboardSummary(BaseModel):

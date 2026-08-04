@@ -19,6 +19,7 @@ class CheckRead(BaseModel):
     response_time_ms: int | None
     result: str
     error_message: str | None
+    response_body_excerpt: str | None
     attempt_count: int
 
 

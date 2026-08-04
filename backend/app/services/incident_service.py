@@ -12,6 +12,7 @@ from app.checker.classifier import CheckResult
 from app.config import get_settings
 from app.core.logging import get_logger
 from app.models.check import Check
+from app.models.email_notification_config import EmailNotificationConfig
 from app.models.incident import Incident
 from app.models.monitor import Monitor
 from app.models.notification_group import NotificationGroup
@@ -21,6 +22,7 @@ from app.notifier import policy
 from app.notifier.email import SmtpNotConfiguredError, SmtpSendError, send_email
 from app.notifier.templates import (
     EmailContent,
+    build_custom_email,
     build_degraded_email,
     build_down_email,
     build_recovery_email,
@@ -109,6 +111,87 @@ def _error_text(check: Check) -> str:
     return "Falha desconhecida"
 
 
+async def _load_email_config(
+    session: AsyncSession,
+    monitor_id: int,
+) -> EmailNotificationConfig | None:
+    stmt = select(EmailNotificationConfig).where(
+        EmailNotificationConfig.monitor_id == monitor_id
+    )
+    return (await session.execute(stmt)).scalar_one_or_none()
+
+
+def _render_template(template: str, values: dict[str, object]) -> str:
+    rendered = template
+    for key, value in values.items():
+        rendered = rendered.replace("{" + key + "}", str(value))
+    return rendered
+
+
+def _changed_after_last_notification(
+    config: EmailNotificationConfig | None,
+    last_notified_at: datetime | None,
+) -> bool:
+    if config is None or not config.enabled:
+        return False
+    if last_notified_at is None:
+        return True
+    updated_at = (
+        config.updated_at
+        if config.updated_at.tzinfo
+        else config.updated_at.replace(tzinfo=UTC)
+    )
+    last = (
+        last_notified_at
+        if last_notified_at.tzinfo
+        else last_notified_at.replace(tzinfo=UTC)
+    )
+    return updated_at > last
+
+
+def _custom_email_content(
+    *,
+    subject_template: str,
+    body_template: str,
+    values: dict[str, object],
+    title: str,
+    badge_color: str,
+) -> EmailContent:
+    subject = _render_template(subject_template, values)
+    body = _render_template(body_template, values)
+    return build_custom_email(
+        subject=subject,
+        body=body,
+        title=title,
+        badge_color=badge_color,
+        dashboard_url=str(values.get("dashboard_url") or ""),
+    )
+
+
+async def _consecutive_down_info(
+    session: AsyncSession,
+    *,
+    monitor_id: int,
+    current_check_id: int,
+    limit: int = 50,
+) -> tuple[int, datetime | None]:
+    stmt = (
+        select(Check)
+        .where(Check.monitor_id == monitor_id, Check.id <= current_check_id)
+        .order_by(desc(Check.checked_at))
+        .limit(limit)
+    )
+    checks = list((await session.execute(stmt)).scalars().all())
+    count = 0
+    first_down_at: datetime | None = None
+    for row in checks:
+        if row.result != CheckResult.DOWN.value:
+            break
+        count += 1
+        first_down_at = row.checked_at
+    return count, first_down_at
+
+
 async def _try_notify(
     session: AsyncSession,
     *,
@@ -118,7 +201,12 @@ async def _try_notify(
 ) -> bool:
     """Envia e-mail; retorna True se enviou. Erros SMTP não quebram o fluxo."""
     smtp = await _load_smtp(session)
-    recipients = await _recipients(session, monitor)
+    config = await _load_email_config(session, monitor.id)
+    recipients = (
+        list(config.emails or [])
+        if config is not None and config.enabled and config.emails
+        else await _recipients(session, monitor)
+    )
     if smtp is None or not recipients:
         logger.warning(
             "notificacao_omitida",
@@ -169,10 +257,31 @@ async def process_check_result(
 
     if result == CheckResult.DOWN.value:
         if open_incident is None:
+            email_config = await _load_email_config(session, monitor.id)
+            threshold = (
+                email_config.failure_threshold
+                if email_config is not None and email_config.enabled
+                else 3
+            )
+            consecutive_down, first_down_at = await _consecutive_down_info(
+                session,
+                monitor_id=monitor.id,
+                current_check_id=check.id,
+            )
+
+            if consecutive_down < threshold:
+                logger.info(
+                    "falha_abaixo_do_threshold",
+                    monitor_id=monitor.id,
+                    consecutive_down=consecutive_down,
+                    threshold=threshold,
+                )
+                return None
+
             incident = Incident(
                 monitor_id=monitor.id,
-                started_at=checked_at,
-                failure_count=1,
+                started_at=first_down_at or checked_at,
+                failure_count=consecutive_down,
                 last_error=_error_text(check),
                 status="open",
             )
@@ -185,14 +294,34 @@ async def process_check_result(
                 duration = policy.format_duration(
                     max(0, int((now - incident.started_at).total_seconds()))
                 )
-                content = build_down_email(
-                    monitor_name=monitor.name,
-                    url=monitor.url,
-                    started_at_local=policy.to_local_str(incident.started_at, tz),
-                    error=_error_text(check),
-                    duration_so_far=duration,
-                    dashboard_url=_dashboard_url(monitor.id),
-                )
+                values = {
+                    "monitor_name": monitor.name,
+                    "url": monitor.url,
+                    "started_at": policy.to_local_str(incident.started_at, tz),
+                    "error": _error_text(check),
+                    "duration": duration,
+                    "duration_so_far": duration,
+                    "dashboard_url": _dashboard_url(monitor.id),
+                    "failure_count": incident.failure_count,
+                    "status_code": check.status_code or "",
+                }
+                if email_config is not None and email_config.enabled:
+                    content = _custom_email_content(
+                        subject_template=email_config.down_subject,
+                        body_template=email_config.down_body,
+                        values=values,
+                        title="FORA DO AR",
+                        badge_color="#f87171",
+                    )
+                else:
+                    content = build_down_email(
+                        monitor_name=monitor.name,
+                        url=monitor.url,
+                        started_at_local=policy.to_local_str(incident.started_at, tz),
+                        error=_error_text(check),
+                        duration_so_far=duration,
+                        dashboard_url=_dashboard_url(monitor.id),
+                    )
                 await _try_notify(
                     session, monitor=monitor, incident=incident, content=content
                 )
@@ -202,28 +331,59 @@ async def process_check_result(
         open_incident.last_error = _error_text(check)
         await session.flush()
 
-        if (
-            rule.on_down
-            and not in_quiet
-            and policy.should_send_reminder(
-                last_notified_at=open_incident.last_notified_at,
-                now_utc=now,
-                reminder_minutes=rule.reminder_minutes,
-                min_interval_minutes=rule.min_interval_minutes,
-            )
-        ):
+        email_config = await _load_email_config(session, monitor.id)
+        reminder_minutes = (
+            email_config.reminder_minutes
+            if email_config is not None and email_config.enabled
+            else rule.reminder_minutes
+        )
+        min_interval_minutes = (
+            reminder_minutes
+            if email_config is not None and email_config.enabled and reminder_minutes
+            else rule.min_interval_minutes
+        )
+        should_notify_open_incident = policy.should_send_reminder(
+            last_notified_at=open_incident.last_notified_at,
+            now_utc=now,
+            reminder_minutes=reminder_minutes,
+            min_interval_minutes=min_interval_minutes,
+        ) or _changed_after_last_notification(
+            email_config,
+            open_incident.last_notified_at,
+        )
+        if rule.on_down and not in_quiet and should_notify_open_incident:
             duration = policy.format_duration(
                 max(0, int((now - open_incident.started_at).total_seconds()))
             )
-            content = build_reminder_email(
-                monitor_name=monitor.name,
-                url=monitor.url,
-                started_at_local=policy.to_local_str(open_incident.started_at, tz),
-                error=_error_text(check),
-                duration_so_far=duration,
-                failure_count=open_incident.failure_count,
-                dashboard_url=_dashboard_url(monitor.id),
-            )
+            values = {
+                "monitor_name": monitor.name,
+                "url": monitor.url,
+                "started_at": policy.to_local_str(open_incident.started_at, tz),
+                "error": _error_text(check),
+                "duration": duration,
+                "duration_so_far": duration,
+                "dashboard_url": _dashboard_url(monitor.id),
+                "failure_count": open_incident.failure_count,
+                "status_code": check.status_code or "",
+            }
+            if email_config is not None and email_config.enabled:
+                content = _custom_email_content(
+                    subject_template=email_config.down_subject,
+                    body_template=email_config.down_body,
+                    values=values,
+                    title="AINDA FORA DO AR",
+                    badge_color="#fb923c",
+                )
+            else:
+                content = build_reminder_email(
+                    monitor_name=monitor.name,
+                    url=monitor.url,
+                    started_at_local=policy.to_local_str(open_incident.started_at, tz),
+                    error=_error_text(check),
+                    duration_so_far=duration,
+                    failure_count=open_incident.failure_count,
+                    dashboard_url=_dashboard_url(monitor.id),
+                )
             await _try_notify(
                 session, monitor=monitor, incident=open_incident, content=content
             )
@@ -246,14 +406,36 @@ async def process_check_result(
             )
 
             if rule.on_recovery and not in_quiet:
-                content = build_recovery_email(
-                    monitor_name=monitor.name,
-                    url=monitor.url,
-                    started_at_local=policy.to_local_str(open_incident.started_at, tz),
-                    resolved_at_local=policy.to_local_str(checked_at, tz),
-                    duration=policy.format_duration(open_incident.duration_seconds or 0),
-                    dashboard_url=_dashboard_url(monitor.id),
-                )
+                email_config = await _load_email_config(session, monitor.id)
+                duration = policy.format_duration(open_incident.duration_seconds or 0)
+                values = {
+                    "monitor_name": monitor.name,
+                    "url": monitor.url,
+                    "started_at": policy.to_local_str(open_incident.started_at, tz),
+                    "resolved_at": policy.to_local_str(checked_at, tz),
+                    "duration": duration,
+                    "dashboard_url": _dashboard_url(monitor.id),
+                    "failure_count": open_incident.failure_count,
+                    "status_code": check.status_code or "",
+                    "error": _error_text(check),
+                }
+                if email_config is not None and email_config.enabled:
+                    content = _custom_email_content(
+                        subject_template=email_config.recovery_subject,
+                        body_template=email_config.recovery_body,
+                        values=values,
+                        title="RESTABELECIDO",
+                        badge_color="#4ade80",
+                    )
+                else:
+                    content = build_recovery_email(
+                        monitor_name=monitor.name,
+                        url=monitor.url,
+                        started_at_local=policy.to_local_str(open_incident.started_at, tz),
+                        resolved_at_local=policy.to_local_str(checked_at, tz),
+                        duration=duration,
+                        dashboard_url=_dashboard_url(monitor.id),
+                    )
                 await _try_notify(
                     session, monitor=monitor, incident=open_incident, content=content
                 )

@@ -64,5 +64,5 @@ mypy_path = "."
 packages = ["app"]
 
 [[tool.mypy.overrides]]
-module = ["asyncpg.*", "aiosmtplib.*"]
+module = ["asyncpg.*", "aiosmtplib.*", "jose.*", "passlib.*"]
 ignore_missing_imports = true

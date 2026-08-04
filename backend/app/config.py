@@ -51,6 +51,14 @@ class Settings(BaseSettings):
         default="admin123",
         description="Senha do admin seed (apenas se não houver usuários)",
     )
+    o365_tenant_id: str = Field(default="")
+    o365_client_id: str = Field(default="")
+    o365_client_secret: str = Field(default="")
+    email_from_addr: str = Field(default="")
+    smtp_host: str = Field(default="")
+    smtp_port: int = Field(default=587, ge=1, le=65535)
+    smtp_user: str = Field(default="")
+    smtp_pass: str = Field(default="")
 
     @property
     def cors_origins_list(self) -> list[str]:

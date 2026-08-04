@@ -9,7 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.check import Check
 from app.models.monitor import Monitor
-from app.schemas.dashboard import DashboardSummary, MonitorCard
+from app.schemas.dashboard import DashboardSummary, MonitorCard, MonitorHistoryItem
 
 HISTORY_LIMIT = 60
 
@@ -33,14 +33,21 @@ async def get_dashboard_summary(session: AsyncSession) -> DashboardSummary:
         last = (await session.execute(last_stmt)).scalar_one_or_none()
 
         hist_stmt = (
-            select(Check.result)
+            select(Check)
             .where(Check.monitor_id == monitor.id)
             .order_by(desc(Check.checked_at))
             .limit(HISTORY_LIMIT)
         )
         history_rows = list((await session.execute(hist_stmt)).scalars().all())
         # Ordem cronológica na barra (mais antigo → mais recente)
-        history = list(reversed(history_rows))
+        history = [
+            MonitorHistoryItem(
+                id=row.id,
+                result=row.result,
+                checked_at=row.checked_at,
+            )
+            for row in reversed(history_rows)
+        ]
 
         # Uptime 24h: % de checagens UP ou DEGRADED
         stats_stmt = (
@@ -48,14 +55,27 @@ async def get_dashboard_summary(session: AsyncSession) -> DashboardSummary:
             .where(Check.monitor_id == monitor.id, Check.checked_at >= since)
             .group_by(Check.result)
         )
-        counts = dict((await session.execute(stats_stmt)).all())
-        total_24h = sum(int(v) for v in counts.values())
-        ok_24h = int(counts.get("UP", 0)) + int(counts.get("DEGRADED", 0))
+        counts: dict[str, int] = {
+            str(row[0]): int(row[1])
+            for row in (await session.execute(stats_stmt)).all()
+        }
+        total_24h = sum(counts.values())
+        ok_24h = counts.get("UP", 0) + counts.get("DEGRADED", 0)
         uptime: float | None = (
             round(100.0 * ok_24h / total_24h, 2) if total_24h > 0 else None
         )
 
         current = last.result if last else None
+        next_check_at: datetime | None = None
+        if monitor.enabled:
+            if last is None:
+                next_check_at = datetime.now(UTC)
+            else:
+                scheduled_at = last.checked_at + timedelta(
+                    seconds=monitor.interval_seconds
+                )
+                next_check_at = max(scheduled_at, datetime.now(UTC))
+
         if not monitor.enabled:
             paused += 1
         elif current == "UP":
@@ -73,9 +93,11 @@ async def get_dashboard_summary(session: AsyncSession) -> DashboardSummary:
                 name=monitor.name,
                 url=monitor.url,
                 enabled=monitor.enabled,
+                interval_seconds=monitor.interval_seconds,
                 tags=list(monitor.tags or []),
                 current_result=current,
                 last_checked_at=last.checked_at if last else None,
+                next_check_at=next_check_at,
                 last_response_time_ms=last.response_time_ms if last else None,
                 uptime_24h_percent=uptime,
                 history=history,

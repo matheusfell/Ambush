@@ -74,15 +74,29 @@ async def test_abre_acumula_e_fecha_incidente(session: AsyncSession) -> None:
             "app.services.incident_service._try_notify",
             new_callable=AsyncMock,
             return_value=False,
-        ):
-            # Abre
+        ) as notify:
+            # Ainda não abre: regra padrão exige 3 DOWN consecutivos.
+            first = await incident_service.process_check_result(
+                session, monitor, await _add_check(session, monitor.id, "DOWN")
+            )
+            await session.commit()
+            assert first is None
+
+            second = await incident_service.process_check_result(
+                session, monitor, await _add_check(session, monitor.id, "DOWN")
+            )
+            await session.commit()
+            assert second is None
+            notify.assert_not_awaited()
+
+            # Abre na terceira falha consecutiva.
             open_inc = await incident_service.process_check_result(
                 session, monitor, await _add_check(session, monitor.id, "DOWN")
             )
             await session.commit()
             assert open_inc is not None
             assert open_inc.status == "open"
-            assert open_inc.failure_count == 1
+            assert open_inc.failure_count == 3
 
             # Acumula
             same = await incident_service.process_check_result(
@@ -91,7 +105,7 @@ async def test_abre_acumula_e_fecha_incidente(session: AsyncSession) -> None:
             await session.commit()
             assert same is not None
             assert same.id == open_inc.id
-            assert same.failure_count == 2
+            assert same.failure_count == 4
 
             # Fecha
             closed = await incident_service.process_check_result(

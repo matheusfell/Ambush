@@ -27,6 +27,7 @@ async def persist_check_result(
         response_time_ms=execution.response_time_ms,
         result=execution.result.value,
         error_message=execution.error_message,
+        response_body_excerpt=execution.response_body_excerpt,
         attempt_count=execution.attempt_count,
     )
     session.add(check)

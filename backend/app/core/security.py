@@ -30,12 +30,16 @@ def create_access_token(*, subject: str, role: str, user_id: int) -> str:
         "uid": user_id,
         "exp": expire,
     }
-    return jwt.encode(payload, settings.jwt_secret, algorithm=settings.jwt_algorithm)
+    encoded: str = jwt.encode(payload, settings.jwt_secret, algorithm=settings.jwt_algorithm)
+    return encoded
 
 
 def decode_access_token(token: str) -> dict[str, Any]:
     settings = get_settings()
     try:
-        return jwt.decode(token, settings.jwt_secret, algorithms=[settings.jwt_algorithm])
+        payload = jwt.decode(token, settings.jwt_secret, algorithms=[settings.jwt_algorithm])
+        if not isinstance(payload, dict):
+            raise ValueError("Token inválido ou expirado")
+        return dict(payload)
     except JWTError as exc:
         raise ValueError("Token inválido ou expirado") from exc

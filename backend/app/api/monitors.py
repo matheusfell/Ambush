@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.deps import AdminUser, CurrentUser
 from app.database import get_db
+from app.models.check import Check
 from app.scheduler.scheduler import scheduler
 from app.schemas.check import CheckListResponse, CheckRead
 from app.schemas.monitor import MonitorCreate, MonitorRead, MonitorUpdate
@@ -133,3 +134,19 @@ async def list_monitor_checks(
         page=page,
         page_size=page_size,
     )
+
+
+@router.get("/{monitor_id}/checks/{check_id}", response_model=CheckRead)
+async def get_monitor_check(
+    monitor_id: int,
+    check_id: int,
+    _user: CurrentUser,
+    db: AsyncSession = Depends(get_db),
+) -> CheckRead:
+    monitor = await monitor_service.get_monitor(db, monitor_id)
+    if monitor is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Monitor não encontrado")
+    check = await db.get(Check, check_id)
+    if check is None or check.monitor_id != monitor_id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Checagem não encontrada")
+    return CheckRead.model_validate(check)

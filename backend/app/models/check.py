@@ -35,6 +35,7 @@ class Check(Base):
     response_time_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
     result: Mapped[str] = mapped_column(String(20), nullable=False)
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    response_body_excerpt: Mapped[str | None] = mapped_column(Text, nullable=True)
     attempt_count: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
 
     monitor: Mapped[Monitor] = relationship("Monitor", back_populates="checks")
