@@ -1,6 +1,10 @@
-# AmbushSystem — Fases 1–3
+# AmbushSystem
 
-Monitoramento interno de disponibilidade (escritório).
+<p align="center">
+  <img src="frontend/public/ambush.png" alt="AmbushSystem" width="180" />
+</p>
+
+O **AmbushSystem** é uma ferramenta interna para monitorar a disponibilidade de sistemas críticos do escritório, como aplicações web, portais externos e APIs de terceiros. Ele executa checagens periódicas, registra histórico, identifica instabilidades e envia alertas por e-mail quando um monitor permanece fora do ar, permitindo agir antes que o problema seja reportado pelos usuários.
 
 | Fase | Conteúdo |
 |---|---|
