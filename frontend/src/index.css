@@ -1,0 +1,61 @@
+@import "tailwindcss";
+
+@theme {
+  --font-sans: "IBM Plex Sans", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, monospace;
+
+  --color-ink: #0e1218;
+  --color-panel: #151b24;
+  --color-panel-2: #1b2330;
+  --color-line: #2a3444;
+  --color-muted: #8b97a8;
+  --color-text: #e8eef6;
+  --color-accent: #3d9b8f;
+  --color-up: #3d9b8f;
+  --color-degraded: #e8a54b;
+  --color-down: #e06c75;
+  --color-paused: #6b7789;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--color-ink);
+  color: var(--color-text);
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Grade sutil — assinatura visual do console */
+.app-shell {
+  background-color: var(--color-ink);
+  background-image:
+    linear-gradient(rgba(61, 155, 143, 0.04) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(61, 155, 143, 0.04) 1px, transparent 1px);
+  background-size: 24px 24px;
+}
+
+@keyframes pulse-down {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.55;
+  }
+}
+
+.pulse-down {
+  animation: pulse-down 1.6s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .pulse-down {
+    animation: none;
+  }
+}
